@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ios_usbmuxd"
+version = "0.1.0"
+description = "Pure Python usbmuxd client for Windows iOS automation"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Testing",
+]
+keywords = ["ios", "usbmuxd", "webdriveragent", "automation", "windows"]
+
+[project.optional-dependencies]
+wda = ["requests"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/yourname/ios_usbmuxd"
+Issues = "https://github.com/yourname/ios_usbmuxd/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
