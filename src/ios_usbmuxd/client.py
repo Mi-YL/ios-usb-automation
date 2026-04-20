@@ -339,27 +339,16 @@ class UsbmuxdClient:
 
         devices: List[DeviceInfo] = []
 
-        # 通过 PLIST 发送 ListDevices 命令
-        tag = self.send_plist({"Command": "ListDevices"})
+        tag = self.send_plist({"MessageType": "ListDevices"})
 
         try:
-            while True:
-                try:
-                    msg_type, result, payload = self.recv_response(tag, timeout=3.0)
-                except TimeoutError:
-                    break
+            msg_type, result, payload = self.recv_response(tag, timeout=3.0)
 
-                if msg_type == MessageType.PLIST:
-                    device_list = UsbmuxdProtocol.parse_plist_payload(payload)
-                    if "DeviceList" in device_list:
-                        for dev_dict in device_list["DeviceList"]:
-                            devices.append(self._parse_device_record(dev_dict))
-                elif msg_type == MessageType.DEVICE_ADD:
-                    dev_dict = UsbmuxdProtocol.parse_plist_payload(payload)
-                    if "DeviceInfo" in dev_dict:
-                        devices.append(self._parse_device_record(dev_dict["DeviceInfo"]))
-
-                break
+            if msg_type == MessageType.PLIST:
+                device_list = UsbmuxdProtocol.parse_plist_payload(payload)
+                if "DeviceList" in device_list:
+                    for dev_dict in device_list["DeviceList"]:
+                        devices.append(self._parse_device_record(dev_dict))
         except TimeoutError:
             pass
 
@@ -369,19 +358,23 @@ class UsbmuxdClient:
         """
         从字典解析设备记录。
 
+        ListDevices 返回格式: {DeviceID, Properties: {SerialNumber, ProductID, LocationID, ConnectionType}}
+        DEVICE_ADD 返回格式: {DeviceID, ProductID, SerialNumber, LocationID, ConnectionType}
+
         参数:
             data: 来自 plist 的设备信息字典
 
         返回:
             DeviceInfo 对象
         """
+        props = data.get("Properties", data)
         return DeviceInfo(
             device_id=data.get("DeviceID", 0),
-            udid=data.get("SerialNumber", ""),
-            product_id=data.get("ProductID", 0),
-            location_id=data.get("LocationID", 0),
-            serial_number=data.get("SerialNumber", ""),
-            connection_type=data.get("ConnectionType", "USB"),
+            udid=props.get("SerialNumber", ""),
+            product_id=props.get("ProductID", 0),
+            location_id=props.get("LocationID", 0),
+            serial_number=props.get("SerialNumber", ""),
+            connection_type=props.get("ConnectionType", "USB"),
         )
 
     def connect_to_device(self, device: DeviceInfo, port: int = 8100) -> None:

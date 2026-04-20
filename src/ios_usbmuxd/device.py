@@ -68,6 +68,7 @@ class DeviceManager:
     def client(self) -> "UsbmuxdClient":
         """获取或创建 usbmuxd 客户端。"""
         if self._client is None:
+            from .client import UsbmuxdClient
             self._client = UsbmuxdClient()
             self._client.connect()
         return self._client
