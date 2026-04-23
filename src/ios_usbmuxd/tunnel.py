@@ -57,8 +57,10 @@ class TunnelServer:
         self._server_socket: Optional[socket.socket] = None
         self._device_socket: Optional[socket.socket] = None
         self._local_conn: Optional[socket.socket] = None
+        self._usbmuxd_client: Optional[UsbmuxdClient] = None
         self._running = False
         self._lock = threading.Lock()
+        self._device: Optional[DeviceInfo] = None
 
     def start(self, device: DeviceInfo) -> None:
         """
@@ -76,16 +78,8 @@ class TunnelServer:
             if self._running:
                 return
 
-            # 创建 usbmuxd 客户端并连接设备
-            try:
-                self._usbmuxd_client = UsbmuxdClient()
-                self._usbmuxd_client.connect()
-                self._usbmuxd_client.connect_to_device(device, self.remote_port)
-                self._device_socket = self._usbmuxd_client.socket
-            except (DeviceConnectError, Exception) as e:
-                raise TunnelError(f"连接设备失败: {e}")
+            self._device = device
 
-            # 创建本地监听套接字
             try:
                 self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -98,8 +92,20 @@ class TunnelServer:
 
             self._running = True
 
-        # 运行事件循环
         self._run_loop()
+
+    def _connect_to_device(self) -> None:
+        """创建到设备的新 usbmuxd 连接。"""
+        if self._usbmuxd_client:
+            try:
+                self._usbmuxd_client.disconnect()
+            except Exception:
+                pass
+
+        self._usbmuxd_client = UsbmuxdClient()
+        self._usbmuxd_client.connect()
+        self._usbmuxd_client.connect_to_device(self._device, self.remote_port)
+        self._device_socket = self._usbmuxd_client.socket
 
     def _run_loop(self) -> None:
         """使用 select() 的主事件循环，实现非阻塞 I/O。"""
@@ -149,13 +155,19 @@ class TunnelServer:
         """处理新的本地客户端连接。"""
         try:
             local_conn, addr = self._server_socket.accept()
-            # 关闭现有的本地连接（如果有）
             if self._local_conn:
                 try:
                     self._local_conn.close()
                 except socket.error:
                     pass
             self._local_conn = local_conn
+
+            if not self._device_socket:
+                try:
+                    self._connect_to_device()
+                    self._device_socket.settimeout(0.1)
+                except Exception as e:
+                    self._close_local()
         except socket.timeout:
             pass
         except socket.error:
@@ -194,13 +206,27 @@ class TunnelServer:
             self._close_local()
 
     def _close_local(self) -> None:
-        """关闭本地连接。"""
+        """关闭本地连接和设备连接。"""
         if self._local_conn:
             try:
                 self._local_conn.close()
             except socket.error:
                 pass
             self._local_conn = None
+
+        if self._device_socket:
+            try:
+                self._device_socket.close()
+            except socket.error:
+                pass
+            self._device_socket = None
+
+        if self._usbmuxd_client:
+            try:
+                self._usbmuxd_client.disconnect()
+            except socket.error:
+                pass
+            self._usbmuxd_client = None
 
     def _cleanup(self) -> None:
         """清理所有资源。"""
@@ -298,9 +324,9 @@ class Tunnel:
             DeviceNotFoundError: 未找到设备
         """
         from .device import DeviceManager
+        from .client import get_default_socket_path
 
-        # 查找设备
-        client = UsbmuxdClient(host=self.usbmuxd_host, port=self.usbmuxd_port)
+        client = UsbmuxdClient(address=get_default_socket_path())
         client.connect()
 
         manager = DeviceManager(client)

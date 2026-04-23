@@ -120,14 +120,17 @@ class UsbmuxdProtocol:
         """
         构建 CONNECT 请求载荷。
 
+        usbmuxd 协议要求 device_id 使用小端序，
+        port 使用网络字节序（大端序）+ 2 字节保留（置0）。
+
         Args:
             device_id: 枚举获得的设备 ID
             port: 设备上的 TCP 端口
 
         Returns:
-            8 字节载荷 (device_id + port)
+            8 字节载荷 (device_id: uint32 LE + port: uint16 BE + reserved: uint16 BE)
         """
-        return struct.pack("<II", device_id, port)
+        return struct.pack("<I", device_id) + struct.pack(">HH", port, 0)
 
     @staticmethod
     def parse_connect_response(payload: bytes) -> int:

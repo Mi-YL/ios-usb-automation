@@ -62,9 +62,11 @@ class TestProtocol:
         """构建 CONNECT 载荷。"""
         payload = UsbmuxdProtocol.build_connect_payload(5, 8100)
         assert len(payload) == 8
-        device_id, port = struct.unpack("<II", payload)
+        device_id = struct.unpack("<I", payload[:4])[0]
+        port, reserved = struct.unpack(">HH", payload[4:])
         assert device_id == 5
         assert port == 8100
+        assert reserved == 0
 
     def test_parse_connect_response(self):
         """解析 CONNECT 响应。"""
