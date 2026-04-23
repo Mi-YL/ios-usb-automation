@@ -191,6 +191,31 @@ class UsbmuxdClient:
         payload = UsbmuxdProtocol.build_connect_payload(device_id, port)
         return self.send_message(MessageType.CONNECT, payload)
 
+    def send_connect_plist(self, device_id: int, port: int) -> int:
+        """
+        使用 plist 协议发送 Connect 请求。
+
+        Apple 自带的 usbmuxd 在现代 macOS/iOS 环境下会对二进制 CONNECT
+        返回 plist 结果，因此这里直接使用 plist 版本的 Connect 消息以兼容
+        Apple 守护进程和 libusbmuxd。
+
+        参数:
+            device_id: 枚举获得的设备 ID
+            port: 要连接的设备上的 TCP 端口
+
+        返回:
+            此消息使用的标签
+        """
+        payload = {
+            "ClientVersionString": "ios-usb-automation 0.1.0",
+            "DeviceID": device_id,
+            "MessageType": "Connect",
+            "PortNumber": socket.htons(port),
+            "ProgName": "ios-usb-automation",
+            "kLibUSBMuxVersion": 3,
+        }
+        return self.send_plist(payload)
+
     def send_listen(self) -> int:
         """
         发送 LISTEN 请求以开始接收设备通知。
@@ -394,9 +419,12 @@ class UsbmuxdClient:
         if not self.socket:
             raise ConnectionError("未连接到 usbmuxd 守护进程")
 
-        tag = self.send_connect(device.device_id, port)
+        tag = self.send_connect_plist(device.device_id, port)
         msg_type, result, payload = self.recv_response(tag, timeout=10.0)
 
+        if msg_type == MessageType.PLIST:
+            response = UsbmuxdProtocol.parse_plist_payload(payload)
+            result = response.get("Number", ResultCode.OK)
         if result != ResultCode.OK:
             raise DeviceConnectError(f"CONNECT 失败，结果码: {result}")
 

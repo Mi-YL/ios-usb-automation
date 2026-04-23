@@ -60,6 +60,14 @@ from .tunnel import TunnelServer, Tunnel
 
 # WDA 客户端
 from .wda_client import WDAClient
+from .wda_launcher import (
+    WDALauncher,
+    NoOpWDALauncher,
+    CommandWDALauncher,
+    DevicectlWDALauncher,
+    XcodebuildWDALauncher,
+    create_wda_launcher,
+)
 
 __all__ = [
     # 版本
@@ -91,4 +99,10 @@ __all__ = [
     "Tunnel",
     # WDA
     "WDAClient",
+    "WDALauncher",
+    "NoOpWDALauncher",
+    "CommandWDALauncher",
+    "DevicectlWDALauncher",
+    "XcodebuildWDALauncher",
+    "create_wda_launcher",
 ]

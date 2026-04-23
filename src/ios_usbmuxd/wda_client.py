@@ -8,12 +8,12 @@ WebDriverAgent (WDA) HTTP API 客户端，支持 usbmuxd 隧道。
 
 import base64
 import time
-import threading
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
 from .tunnel import Tunnel
-from .device import DeviceManager, DeviceInfo
-from .exceptions import WDAError, SessionError
+from .device import DeviceInfo
+from .exceptions import WDAError
+from .wda_launcher import WDALauncher
 
 
 class WDAClient:
@@ -48,6 +48,7 @@ class WDAClient:
         usbmuxd_host: str = "127.0.0.1",
         usbmuxd_port: int = 27015,
         timeout: float = 30.0,
+        launcher: Optional[WDALauncher] = None,
     ):
         """
         初始化 WDA 客户端。
@@ -60,6 +61,7 @@ class WDAClient:
             usbmuxd_host: usbmuxd 守护进程主机（默认: 127.0.0.1）
             usbmuxd_port: usbmuxd 守护进程端口（默认: 27015）
             timeout: HTTP 请求默认超时时间
+            launcher: 可选的 WDA 启动器。可用于 macOS 本机启动或 Windows 调外部命令
         """
         self.host = host
         self.port = port
@@ -68,6 +70,7 @@ class WDAClient:
         self.usbmuxd_host = usbmuxd_host
         self.usbmuxd_port = usbmuxd_port
         self.timeout = timeout
+        self.launcher = launcher
 
         self.session_id: Optional[str] = None
         self._tunnel: Optional[Tunnel] = None
@@ -80,6 +83,12 @@ class WDAClient:
     def base_url(self) -> str:
         """获取 HTTP 请求的基础 URL。"""
         return f"http://{self.host}:{self.port}"
+
+    def _session_endpoint(self, path: str) -> str:
+        """构造带会话 ID 的端点。"""
+        if not self.session_id:
+            raise WDAError("当前没有可用的 WDA 会话")
+        return f"{self.base_url}/session/{self.session_id}{path}"
 
     @property
     def requests(self):
@@ -119,12 +128,63 @@ class WDAClient:
             self._tunnel.stop()
             self._tunnel = None
 
-    def connect(self, bundle_id: str = "com.apple.mobilesafari") -> bool:
+    def status(self) -> Optional[Dict[str, Any]]:
+        """
+        获取 WDA 状态响应。
+
+        返回:
+            成功返回 JSON 字典，失败返回 None
+        """
+        try:
+            response = self.requests.get(
+                f"{self.base_url}/status",
+                timeout=min(self.timeout, 10.0),
+            )
+            if response.status_code != 200:
+                return None
+            return response.json()
+        except Exception:
+            return None
+
+    def wait_until_ready(
+        self,
+        timeout: float = 30.0,
+        interval: float = 1.0,
+    ) -> bool:
+        """
+        轮询等待 WDA 就绪。
+
+        参数:
+            timeout: 最大等待时间（秒）
+            interval: 轮询间隔（秒）
+
+        返回:
+            就绪返回 True，否则返回 False
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.status() is not None:
+                return True
+            time.sleep(interval)
+        return False
+
+    def connect(
+        self,
+        bundle_id: Optional[str] = "com.apple.mobilesafari",
+        create_session: bool = True,
+        ready_timeout: float = 30.0,
+        ready_interval: float = 1.0,
+        launch_if_needed: bool = True,
+    ) -> bool:
         """
         连接到 WDA 并创建会话。
 
         参数:
-            bundle_id: 要自动化的应用 Bundle ID（默认: Safari）
+            bundle_id: 要自动化的应用 Bundle ID。传入 None 时附着到当前前台应用
+            create_session: 是否创建会话。False 时仅确保 WDA 已可访问
+            ready_timeout: 等待 WDA 就绪的最大时间（秒）
+            ready_interval: 等待 WDA 就绪时的轮询间隔（秒）
+            launch_if_needed: 当配置了 launcher 且 WDA 尚未就绪时，是否先尝试启动
 
         返回:
             连接成功返回 True
@@ -137,18 +197,38 @@ class WDAClient:
             if self.use_usbmuxd:
                 self._start_tunnel()
 
-            # 健康检查
-            response = self.requests.get(
-                f"{self.base_url}/status",
-                timeout=self.timeout
-            )
-            if response.status_code != 200:
+            ready = self.status() is not None
+            if not ready and launch_if_needed and self.launcher is not None:
+                self.launcher.start(self)
+                ready = self.wait_until_ready(
+                    timeout=ready_timeout,
+                    interval=ready_interval,
+                )
+
+            if not ready:
                 return False
 
+            if not create_session:
+                return True
+
             # 创建会话
+            always_match = {}
+            desired_capabilities = {}
+            if bundle_id:
+                always_match["bundleId"] = bundle_id
+                # 保留旧字段，兼容仍接受 JSONWP 的 WDA 版本
+                desired_capabilities["bundleId"] = bundle_id
+
+            session_payload = {
+                "capabilities": {
+                    "alwaysMatch": always_match,
+                    "firstMatch": [{}],
+                },
+                "desiredCapabilities": desired_capabilities,
+            }
             session_response = self.requests.post(
                 f"{self.base_url}/session",
-                json={"desiredCapabilities": {"bundleId": bundle_id}},
+                json=session_payload,
                 timeout=self.timeout,
             )
 
@@ -186,6 +266,8 @@ class WDAClient:
     def disconnect(self) -> None:
         """断开客户端连接并清理资源。"""
         self.terminate_session()
+        if self.launcher is not None:
+            self.launcher.stop()
         self._stop_tunnel()
 
     def screenshot(self) -> Optional[bytes]:
@@ -207,6 +289,23 @@ class WDAClient:
             return None
         except Exception:
             return None
+
+    def go_home(self) -> bool:
+        """
+        返回设备桌面。
+
+        返回:
+            成功返回 True
+        """
+        try:
+            response = self.requests.post(
+                f"{self.base_url}/wda/homescreen",
+                json={},
+                timeout=10,
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
 
     def source(self) -> Optional[str]:
         """
@@ -239,7 +338,7 @@ class WDAClient:
         """
         try:
             response = self.requests.post(
-                f"{self.base_url}/wda/tap/0",
+                self._session_endpoint("/wda/tap"),
                 json={"x": x, "y": y},
                 timeout=10
             )
@@ -270,12 +369,12 @@ class WDAClient:
         """
         try:
             response = self.requests.post(
-                f"{self.base_url}/wda/element/0/perform swipe",
+                self._session_endpoint("/wda/dragfromtoforduration"),
                 json={
-                    "startX": x1,
-                    "startY": y1,
-                    "endX": x2,
-                    "endY": y2,
+                    "fromX": x1,
+                    "fromY": y1,
+                    "toX": x2,
+                    "toY": y2,
                     "duration": duration,
                 },
                 timeout=10
@@ -297,7 +396,7 @@ class WDAClient:
         """
         try:
             response = self.requests.post(
-                f"{self.base_url}/wda/element/{element_id}/value",
+                self._session_endpoint(f"/element/{element_id}/value"),
                 json={"value": list(text)},
                 timeout=10
             )
@@ -332,7 +431,7 @@ class WDAClient:
 
         try:
             response = self.requests.post(
-                f"{self.base_url}/elements",
+                self._session_endpoint("/elements"),
                 json={"using": mapped_by, "value": value},
                 timeout=10
             )
@@ -374,7 +473,9 @@ class WDAClient:
         """
         try:
             response = self.requests.get(
-                f"{self.base_url}/wda/element/{element_id}/attribute/{attribute}",
+                self._session_endpoint(
+                    f"/element/{element_id}/attribute/{attribute}"
+                ),
                 timeout=10
             )
             if response.status_code == 200:
@@ -408,14 +509,7 @@ class WDAClient:
         返回:
             WDA 健康返回 True
         """
-        try:
-            response = self.requests.get(
-                f"{self.base_url}/status",
-                timeout=5
-            )
-            return response.status_code == 200
-        except Exception:
-            return False
+        return self.status() is not None
 
     def __enter__(self):
         """上下文管理器入口。"""
